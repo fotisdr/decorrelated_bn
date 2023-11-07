@@ -1,18 +1,24 @@
 """
 The implementations of Decorrelated Batch Normalization.
+https://github.com/bhneo/decorrelated_bn
+https://arxiv.org/abs/1904.03441
 """
 import tensorflow as tf
 import numpy as np
-from tensorflow.python.keras import backend as K
-from tensorflow.python.keras import constraints
-from tensorflow.python.keras import initializers
-from tensorflow.python.keras import regularizers
-from tensorflow.python.keras.layers import Layer
+from tensorflow.keras import backend as K
+from tensorflow.keras import constraints
+from tensorflow.keras import initializers
+from tensorflow.keras import regularizers
+#from tensorflow.python.keras.layers import Layer
+from tensorflow.keras.layers import Layer
 from tensorflow.python.keras.utils import conv_utils
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import variables as tf_variables
 
+from tensorflow.keras.utils import register_keras_serializable
+from tensorflow.keras.layers import Lambda
 
+@register_keras_serializable(package=__name__)
 class DecorelationNormalization(Layer):
     def __init__(self,
                  axis=-1,
@@ -38,6 +44,7 @@ class DecorelationNormalization(Layer):
                  **kwargs):
         assert decomposition in ['cholesky', 'zca', 'pca', 'iter_norm',
                                  'cholesky_wm', 'zca_wm', 'pca_wm', 'iter_norm_wm']
+        # super().__init__(**kwargs)
         super(DecorelationNormalization, self).__init__(name=name, trainable=trainable, **kwargs)
         self.axis = axis
         self.decomposition = decomposition
@@ -58,6 +65,9 @@ class DecorelationNormalization(Layer):
         self.gamma_regularizer = regularizers.get(gamma_regularizer)
         self.beta_constraint = constraints.get(beta_constraint)
         self.gamma_constraint = constraints.get(gamma_constraint)
+        
+        self.gamma = None
+        self.beta = None
 
     def matrix_initializer(self, shape, dtype=tf.float32, partition_info=None):
         moving_convs = []
@@ -117,9 +127,9 @@ class DecorelationNormalization(Layer):
                 constraint=self.beta_constraint,
                 trainable=True,
                 experimental_autocast=False)
-        else:
-            self.gamma = None
-            self.beta = None
+        # else:
+        #     self.gamma = None
+        #     self.beta = None
 
         self.built = True
 
@@ -127,6 +137,11 @@ class DecorelationNormalization(Layer):
         shape = K.int_shape(inputs)
         if len(shape) == 4:
             w, h, c = shape[1:]
+        elif len(shape) == 3: # added this for 3-dimensional inputs
+            w, h, c = shape[1], 1, shape[-1]
+            inputs = tf.expand_dims(inputs, 2)
+            if w == None: # None dimension
+                w = -1
         elif len(shape) == 2:
             w, h, c = 1, 1, shape[-1]
             inputs = tf.expand_dims(inputs, 1)
@@ -156,8 +171,8 @@ class DecorelationNormalization(Layer):
                                                          self.momentum),
                                  K.moving_average_update(self.moving_matrix,
                                                          whitten_matrix if '_wm' in self.decomposition else ff_aprs,
-                                                         self.momentum)],
-                                inputs)
+                                                         self.momentum)]) #,
+                                # inputs) # removed this for newer tf layer versions
             return whitten_matrix
 
         def test():
@@ -179,10 +194,11 @@ class DecorelationNormalization(Layer):
             f_hat = tf.matmul(inv_sqrt, f, name='whiten')
             decorelated = tf.reshape(f_hat, [c, bs, w, h])
             decorelated = tf.transpose(decorelated, [1, 2, 3, 0])
-
-        if w == 1:
-            decorelated = tf.squeeze(decorelated, 1)
+            
+        # changed the order of this to account for 3-dimensional inputs
         if h == 1:
+            decorelated = tf.squeeze(decorelated, 2)
+        if w == 1:
             decorelated = tf.squeeze(decorelated, 1)
         if self.gamma is not None:
             scale = math_ops.cast(self.gamma, inputs.dtype)
@@ -194,6 +210,10 @@ class DecorelationNormalization(Layer):
 
     def compute_output_shape(self, input_shape):
         return input_shape
+
+    def get_config(self):
+        config = super(DecorelationNormalization, self).get_config()
+        return config
 
 
 def center(inputs, moving_mean, w, h, c, instance_norm=False):
@@ -358,7 +378,5 @@ def test_whitten():
     print(y_sigma)
     print(y2_sigma)
     print()
-
-
-
-
+    
+    
